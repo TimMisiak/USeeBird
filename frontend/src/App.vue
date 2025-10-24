@@ -753,10 +753,12 @@ onBeforeUnmount(() => {
 <style scoped>
 .app-shell {
   min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   gap: 1rem;
   padding: 2rem;
+  overflow: hidden;
   color: #f1f5f9;
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
