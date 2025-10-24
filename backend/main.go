@@ -16,8 +16,14 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	hub := NewHub()
+	go hub.Run()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", healthHandler)
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		serveWebsocket(hub, w, r)
+	})
 
 	staticDir := os.Getenv("STATIC_DIR")
 	if staticDir == "" {
