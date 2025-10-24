@@ -693,7 +693,7 @@ onBeforeUnmount(() => {
   <div class="app-shell">
     <header class="header">
       <div class="brand">
-        <span class="brand-icon" aria-hidden="true"></span>
+        <img class="brand-icon" src="/logo-sm.png" alt="USeeBird logo" />
         <span class="sr-only">Realtime Chat</span>
       </div>
       <div class="status" :data-status="connectionStatus">
@@ -778,11 +778,10 @@ onBeforeUnmount(() => {
 }
 
 .brand-icon {
-  width: 2rem;
-  height: 2rem;
-  border-radius: 0.75rem;
-  background: linear-gradient(135deg, #38bdf8, #6366f1);
-  box-shadow: 0 10px 25px rgba(99, 102, 241, 0.35);
+  height: 2.5rem;
+  width: auto;
+  display: block;
+  object-fit: contain;
 }
 
 .sr-only {
