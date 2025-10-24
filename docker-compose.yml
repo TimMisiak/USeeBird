@@ -1,0 +1,31 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+      args:
+        ENABLE_SOURCEMAPS: "true"
+    environment:
+      DATABASE_URL: file:/data/chatalingua.db?_busy_timeout=5000&_foreign_keys=ON
+      FILE_STORE_DIR: /data
+      OIDC_REDIRECT_URL: https://jpcard.org/auth/callback
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SESSION_COOKIE_SECURE: "true"
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      FIREWORKS_API_KEY: ${FIREWORKS_API_KEY}
+      BYPASS_GOOGLE_LOGIN: "true"
+      DISABLE_SSL: "true"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - backend-data:/data
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+volumes:
+  backend-data:
