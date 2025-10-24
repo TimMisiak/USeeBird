@@ -54,6 +54,9 @@ type message struct {
 	SentAt     string `json:"sentAt,omitempty"`
 	ServerTime string `json:"serverTime,omitempty"`
 	Sender     string `json:"sender,omitempty"`
+	Target     string `json:"target,omitempty"`
+	SDP        string `json:"sdp,omitempty"`
+	Candidate  string `json:"candidate,omitempty"`
 }
 
 func (h *hub) Run() {
@@ -195,6 +198,11 @@ func (c *client) prepareBroadcast(payload []byte) []byte {
 			return nil
 		}
 	case "ping":
+	case "webrtc-offer":
+	case "webrtc-answer":
+	case "webrtc-ice":
+	case "webrtc-presence":
+	case "webrtc-presence-request":
 	default:
 		log.Printf("unknown message type %q from %s", msg.Type, c.id)
 		return nil
