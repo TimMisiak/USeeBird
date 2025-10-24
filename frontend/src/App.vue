@@ -2,6 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 type MessageType = 'chat' | 'system' | 'ping'
+type SignalingMessageType =
+  | MessageType
+  | 'webrtc-offer'
+  | 'webrtc-answer'
+  | 'webrtc-ice'
+  | 'webrtc-presence'
+  | 'webrtc-presence-request'
 
 interface ChatLogEntry {
   id: string
@@ -14,12 +21,15 @@ interface ChatLogEntry {
 }
 
 interface ServerMessage {
-  type: MessageType
+  type: SignalingMessageType
   text?: string
   id?: string
   sentAt?: string
   serverTime?: string
   sender?: string
+  target?: string
+  sdp?: string
+  candidate?: string
 }
 
 const connectionStatus = ref<'connecting' | 'connected' | 'disconnected'>('connecting')
@@ -48,9 +58,19 @@ const pendingPings = new Map<
   { startedAt: number; messageIndex: number }
 >()
 
+const webrtcEnabled = ref(false)
+const peerConnections = new Map<string, RTCPeerConnection>()
+const dataChannels = new Map<string, RTCDataChannel>()
+const webrtcPendingPings = new Map<
+  string,
+  { startedAt: number; messageIndex: number; peerId: string }
+>()
+const knownPeers = ref<string[]>([])
+
 const canSend = computed(
   () => connectionStatus.value === 'connected' && ws.value?.readyState === WebSocket.OPEN,
 )
+const canSendWebRTCPing = computed(() => canSend.value)
 
 function formatTime(value: Date) {
   return value.toLocaleTimeString()
@@ -63,6 +83,342 @@ function shortId(id?: string) {
 
 function appendMessage(entry: ChatLogEntry) {
   messages.value.push(entry)
+}
+
+function addKnownPeer(peerId?: string | null) {
+  if (!peerId || peerId === selfId.value) {
+    return
+  }
+  if (!knownPeers.value.includes(peerId)) {
+    knownPeers.value = [...knownPeers.value, peerId]
+  }
+  if (webrtcEnabled.value) {
+    void initiateConnectionWith(peerId)
+  }
+}
+
+function sendSignalingMessage(message: Record<string, unknown> & { type: SignalingMessageType }) {
+  if (!ws.value || ws.value.readyState !== WebSocket.OPEN) {
+    return
+  }
+  ws.value.send(JSON.stringify(message))
+}
+
+function requestWebRTCPresence() {
+  if (!ws.value || ws.value.readyState !== WebSocket.OPEN) {
+    return
+  }
+  sendSignalingMessage({
+    type: 'webrtc-presence-request',
+    id: crypto.randomUUID?.() ?? Math.random().toString(36).slice(2),
+    sentAt: new Date().toISOString(),
+  })
+}
+
+function ensureWebRTCSetup() {
+  if (!webrtcEnabled.value) {
+    webrtcEnabled.value = true
+    appendMessage({
+      id: crypto.randomUUID?.() ?? Math.random().toString(36).slice(2),
+      type: 'system',
+      text: 'Attempting to establish WebRTC connections…',
+      timestamp: new Date(),
+    })
+  }
+  requestWebRTCPresence()
+  knownPeers.value.forEach((peerId) => {
+    void initiateConnectionWith(peerId)
+  })
+}
+
+function cleanupPeer(peerId: string) {
+  const channel = dataChannels.get(peerId)
+  if (channel) {
+    channel.onclose = null
+    channel.onmessage = null
+    channel.onopen = null
+    if (channel.readyState === 'open') {
+      channel.close()
+    }
+    dataChannels.delete(peerId)
+  }
+  const pc = peerConnections.get(peerId)
+  if (pc) {
+    pc.onicecandidate = null
+    pc.onconnectionstatechange = null
+    pc.ondatachannel = null
+    pc.close()
+    peerConnections.delete(peerId)
+  }
+}
+
+function handleDataChannelMessage(peerId: string, raw: string | ArrayBuffer | Blob) {
+  if (raw instanceof ArrayBuffer || raw instanceof Blob) {
+    return
+  }
+  let parsed: any
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    console.warn('Received malformed WebRTC data channel message', error)
+    return
+  }
+
+  if (parsed?.type === 'webrtc-ping') {
+    if (parsed.ack && typeof parsed.id === 'string') {
+      const tracker = webrtcPendingPings.get(parsed.id)
+      if (tracker) {
+        const entry = messages.value[tracker.messageIndex]
+        if (entry) {
+          messages.value[tracker.messageIndex] = {
+            ...entry,
+            pending: false,
+            latencyMs: performance.now() - tracker.startedAt,
+            timestamp: new Date(),
+            text: `WebRTC ping acknowledged by ${shortId(peerId)}.`,
+          }
+        }
+        webrtcPendingPings.delete(parsed.id)
+      }
+      return
+    }
+
+    const channel = dataChannels.get(peerId)
+    if (channel && channel.readyState === 'open') {
+      const response = {
+        type: 'webrtc-ping',
+        id:
+          typeof parsed.id === 'string'
+            ? parsed.id
+            : crypto.randomUUID?.() ?? Math.random().toString(36).slice(2),
+        ack: true,
+        sentAt: parsed.sentAt,
+      }
+      channel.send(JSON.stringify(response))
+    }
+
+    appendMessage({
+      id:
+        typeof parsed.id === 'string'
+          ? parsed.id
+          : crypto.randomUUID?.() ?? Math.random().toString(36).slice(2),
+      type: 'ping',
+      text: `WebRTC ping received from ${shortId(peerId)}.`,
+      timestamp: new Date(),
+      sender: peerId,
+      pending: false,
+    })
+  }
+}
+
+function setupDataChannel(peerId: string, channel: RTCDataChannel) {
+  dataChannels.set(peerId, channel)
+  channel.onopen = () => {
+    appendMessage({
+      id: crypto.randomUUID?.() ?? Math.random().toString(36).slice(2),
+      type: 'system',
+      text: `WebRTC data channel opened with ${shortId(peerId)}.`,
+      timestamp: new Date(),
+    })
+  }
+  channel.onclose = () => {
+    appendMessage({
+      id: crypto.randomUUID?.() ?? Math.random().toString(36).slice(2),
+      type: 'system',
+      text: `WebRTC data channel closed with ${shortId(peerId)}.`,
+      timestamp: new Date(),
+    })
+    dataChannels.delete(peerId)
+  }
+  channel.onmessage = (event) => {
+    handleDataChannelMessage(peerId, event.data)
+  }
+}
+
+function createPeerConnection(peerId: string) {
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  })
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      sendSignalingMessage({
+        type: 'webrtc-ice',
+        target: peerId,
+        candidate: JSON.stringify(event.candidate),
+      })
+    }
+  }
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      cleanupPeer(peerId)
+    }
+  }
+  pc.ondatachannel = (event) => {
+    setupDataChannel(peerId, event.channel)
+  }
+  peerConnections.set(peerId, pc)
+  return pc
+}
+
+async function initiateConnectionWith(peerId: string) {
+  if (!webrtcEnabled.value || !ws.value || ws.value.readyState !== WebSocket.OPEN) {
+    return
+  }
+
+  let pc = peerConnections.get(peerId)
+  if (!pc) {
+    pc = createPeerConnection(peerId)
+  }
+
+  if (pc.signalingState !== 'stable') {
+    return
+  }
+
+  let channel = dataChannels.get(peerId)
+  if (!channel || channel.readyState === 'closed') {
+    channel = pc.createDataChannel('useebird-chat')
+    setupDataChannel(peerId, channel)
+  }
+
+  const offer = await pc.createOffer()
+  await pc.setLocalDescription(offer)
+  sendSignalingMessage({
+    type: 'webrtc-offer',
+    target: peerId,
+    sdp: JSON.stringify(offer),
+  })
+}
+
+async function handleIncomingOffer(message: ServerMessage) {
+  const peerId = message.sender
+  if (!peerId || peerId === selfId.value || message.target !== selfId.value || !message.sdp) {
+    return
+  }
+
+  let pc = peerConnections.get(peerId)
+  if (!pc) {
+    pc = createPeerConnection(peerId)
+  }
+
+  const desc = JSON.parse(message.sdp) as RTCSessionDescriptionInit
+  await pc.setRemoteDescription(desc)
+  const answer = await pc.createAnswer()
+  await pc.setLocalDescription(answer)
+  sendSignalingMessage({
+    type: 'webrtc-answer',
+    target: peerId,
+    sdp: JSON.stringify(answer),
+  })
+}
+
+async function handleIncomingAnswer(message: ServerMessage) {
+  const peerId = message.sender
+  if (!peerId || peerId === selfId.value || message.target !== selfId.value || !message.sdp) {
+    return
+  }
+
+  const pc = peerConnections.get(peerId)
+  if (!pc) {
+    return
+  }
+
+  const desc = JSON.parse(message.sdp) as RTCSessionDescriptionInit
+  await pc.setRemoteDescription(desc)
+}
+
+async function handleIncomingIceCandidate(message: ServerMessage) {
+  const peerId = message.sender
+  if (!peerId || peerId === selfId.value || message.target !== selfId.value || !message.candidate) {
+    return
+  }
+
+  const pc = peerConnections.get(peerId)
+  if (!pc) {
+    return
+  }
+
+  try {
+    const candidate = JSON.parse(message.candidate) as RTCIceCandidateInit
+    await pc.addIceCandidate(candidate)
+  } catch (error) {
+    console.warn('Failed to add ICE candidate', error)
+  }
+}
+
+function handleWebRTCPresenceRequest(message: ServerMessage) {
+  const peerId = message.sender
+  if (!peerId || peerId === selfId.value) {
+    return
+  }
+  addKnownPeer(peerId)
+  sendSignalingMessage({
+    type: 'webrtc-presence',
+    target: peerId,
+    sentAt: new Date().toISOString(),
+  })
+  if (webrtcEnabled.value) {
+    void initiateConnectionWith(peerId)
+  }
+}
+
+function handleWebRTCPresence(message: ServerMessage) {
+  const peerId = message.sender
+  if (!peerId || peerId === selfId.value) {
+    return
+  }
+
+  if (message.target && message.target !== selfId.value) {
+    return
+  }
+
+  addKnownPeer(peerId)
+}
+
+function getOpenDataChannels() {
+  return Array.from(dataChannels.entries()).filter(([, channel]) => channel.readyState === 'open')
+}
+
+function sendWebRTCPing() {
+  if (!canSendWebRTCPing.value) {
+    return
+  }
+
+  ensureWebRTCSetup()
+  const openChannels = getOpenDataChannels()
+  if (!openChannels.length) {
+    appendMessage({
+      id: crypto.randomUUID?.() ?? Math.random().toString(36).slice(2),
+      type: 'system',
+      text: 'WebRTC channel not ready yet — attempting to establish connection.',
+      timestamp: new Date(),
+    })
+    return
+  }
+
+  openChannels.forEach(([peerId, channel]) => {
+    const id = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)
+    const entry: ChatLogEntry = {
+      id,
+      type: 'ping',
+      text: `WebRTC ping sent to ${shortId(peerId)}…`,
+      timestamp: new Date(),
+      sender: selfId.value ?? undefined,
+      pending: true,
+    }
+    appendMessage(entry)
+    webrtcPendingPings.set(id, {
+      startedAt: performance.now(),
+      messageIndex: messages.value.length - 1,
+      peerId,
+    })
+    channel.send(
+      JSON.stringify({
+        type: 'webrtc-ping',
+        id,
+        sentAt: new Date().toISOString(),
+      }),
+    )
+  })
 }
 
 watch(
@@ -164,6 +520,10 @@ function handleServerMessage(raw: string) {
 
   const timestamp = parsed.serverTime ? new Date(parsed.serverTime) : new Date()
 
+  if (parsed.sender) {
+    addKnownPeer(parsed.sender)
+  }
+
   switch (parsed.type) {
     case 'system':
       if (parsed.text === 'connected' && parsed.sender) {
@@ -199,6 +559,21 @@ function handleServerMessage(raw: string) {
       break
     case 'ping':
       handleIncomingPing(parsed, timestamp)
+      break
+    case 'webrtc-presence-request':
+      handleWebRTCPresenceRequest(parsed)
+      break
+    case 'webrtc-presence':
+      handleWebRTCPresence(parsed)
+      break
+    case 'webrtc-offer':
+      void handleIncomingOffer(parsed)
+      break
+    case 'webrtc-answer':
+      void handleIncomingAnswer(parsed)
+      break
+    case 'webrtc-ice':
+      void handleIncomingIceCandidate(parsed)
       break
   }
 }
@@ -342,6 +717,14 @@ onBeforeUnmount(() => {
       >
       <button type="submit" :disabled="!canSend || !messageInput.trim()">Send</button>
       <button type="button" class="ping" :disabled="!canSend" @click="sendPing">Ping</button>
+      <button
+        type="button"
+        class="webrtc"
+        :disabled="!canSendWebRTCPing"
+        @click="sendWebRTCPing"
+      >
+        WebRTC Ping
+      </button>
     </form>
   </div>
 </template>
@@ -476,7 +859,7 @@ onBeforeUnmount(() => {
 
 .input-bar {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto auto auto;
   gap: 0.75rem;
   align-items: center;
 }
@@ -523,6 +906,12 @@ onBeforeUnmount(() => {
   background: rgba(248, 250, 252, 0.15);
   color: #e2e8f0;
   box-shadow: 0 10px 25px rgba(226, 232, 240, 0.18);
+}
+
+.input-bar button.webrtc {
+  background: rgba(99, 102, 241, 0.2);
+  color: #c7d2fe;
+  box-shadow: 0 10px 25px rgba(99, 102, 241, 0.25);
 }
 
 @media (max-width: 640px) {
