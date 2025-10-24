@@ -655,8 +655,26 @@ function handleSubmit(event: Event) {
   sendChat()
 }
 
+watch(
+  () => messages.value.length,
+  () => {
+    void nextTick(() => {
+      const container = logContainer.value
+      if (container) {
+        container.scrollTop = container.scrollHeight
+      }
+    })
+  },
+)
+
 onMounted(() => {
   connect()
+  void nextTick(() => {
+    const container = logContainer.value
+    if (container) {
+      container.scrollTop = container.scrollHeight
+    }
+  })
 })
 
 onBeforeUnmount(() => {
@@ -674,7 +692,10 @@ onBeforeUnmount(() => {
 <template>
   <div class="app-shell">
     <header class="header">
-      <h1>Realtime Chat</h1>
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true"></span>
+        <span class="sr-only">Realtime Chat</span>
+      </div>
       <div class="status" :data-status="connectionStatus">
         <span class="indicator"></span>
         <span>{{ statusText }}</span>
@@ -732,10 +753,12 @@ onBeforeUnmount(() => {
 <style scoped>
 .app-shell {
   min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   gap: 1rem;
   padding: 2rem;
+  overflow: hidden;
   color: #f1f5f9;
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
@@ -747,10 +770,31 @@ onBeforeUnmount(() => {
   gap: 1rem;
 }
 
-.header h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0;
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  position: relative;
+}
+
+.brand-icon {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.75rem;
+  background: linear-gradient(135deg, #38bdf8, #6366f1);
+  box-shadow: 0 10px 25px rgba(99, 102, 241, 0.35);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .status {
@@ -794,6 +838,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  min-height: 0;
 }
 
 .placeholder {
