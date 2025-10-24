@@ -353,7 +353,6 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 1rem;
   padding: 2rem;
-  background: var(--color-background, #101420);
   color: #f1f5f9;
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
