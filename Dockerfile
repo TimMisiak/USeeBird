@@ -1,5 +1,7 @@
 # Stage 1 - Build frontend assets
-FROM node:18 AS frontend-builder
+FROM node:22-alpine AS frontend-builder
+ARG ENABLE_SOURCEMAPS=false
+ENV ENABLE_SOURCEMAPS=${ENABLE_SOURCEMAPS}
 WORKDIR /frontend
 
 # Install dependencies and build the frontend (expects a package.json in ./frontend)
@@ -9,7 +11,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2 - Build the Go backend
-FROM golang:1.21 AS backend-builder
+FROM golang:1.24 AS backend-builder
 WORKDIR /app
 
 COPY backend/go.mod ./
